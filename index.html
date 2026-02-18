@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>แจ้งพิกัดน้ำประปาแตก</title>
+    <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+    <style>
+        body { font-family: sans-serif; text-align: center; padding-top: 50px; }
+        .loader { border: 8px solid #f3f3f3; border-top: 8px solid #3498db; border-radius: 50%; width: 50px; height: 50px; animation: spin 2s linear infinite; margin: auto; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div id="status">กำลังดึงพิกัด GPS...</div>
+    <div class="loader"></div>
+
+    <script>
+        async function sendLocation() {
+            try {
+                // 1. เชื่อมต่อกับระบบ LIFF (ใส่ ID ที่ได้จาก LINE Developers)
+                await liff.init({ liffId: "2009159637-UYJ3xxUc" });
+
+                // 2. เช็คว่าเปิดใน LINE หรือยัง
+                if (!liff.isLoggedIn()) {
+                    liff.login();
+                    return;
+                }
+
+                // 3. ขอพิกัดจากมือถือ
+                const pos = await liff.getLocation();
+                
+                // 4. สั่งส่งข้อความพิกัดเข้าแชททันที
+                await liff.sendMessages([{
+                    type: "location",
+                    title: "พบเหตุน้ำประปาแตก",
+                    address: "ตำแหน่งจากเครื่องผู้แจ้ง",
+                    latitude: pos.latitude,
+                    longitude: pos.longitude
+                }]);
+
+                // 5. ส่งเสร็จแล้วปิดหน้าต่างอัตโนมัติ
+                liff.closeWindow();
+
+            } catch (error) {
+                document.getElementById('status').innerText = "เกิดข้อผิดพลาด: " + error.message;
+                console.error(error);
+            }
+        }
+        sendLocation();
+    </script>
+</body>
+</html>

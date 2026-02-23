@@ -6,43 +6,62 @@
     <title>แจ้งพิกัดน้ำประปาแตก</title>
     <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
     <style>
-        body { font-family: sans-serif; text-align: center; padding-top: 50px; background-color: #f8f9fa; }
-        .loader { border: 5px solid #f3f3f3; border-top: 5px solid #28a745; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 20px auto; }
+        @import url('https://fonts.googleapis.com/css2?family=Kanit:wght@300;400&display=swap');
+        body { font-family: 'Kanit', sans-serif; text-align: center; padding-top: 50px; background-color: #f8f9fa; color: #333; }
+        .loader { border: 5px solid #f3f3f3; border-top: 5px solid #1a73e8; border-radius: 50%; width: 45px; height: 45px; animation: spin 1s linear infinite; margin: 20px auto; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .status-text { font-size: 18px; margin-top: 10px; }
     </style>
 </head>
 <body>
-    <div id="status">กำลังดึงพิกัดจาก GPS...</div>
     <div class="loader"></div>
+    <div id="status" class="status-text">กำลังค้นหาตำแหน่งที่ตั้งแม่นยำ...</div>
 
     <script>
         async function main() {
             try {
-                // 1. ใส่ไอดีของคุณตรงนี้
+                // 1. เริ่มต้น LIFF
                 await liff.init({ liffId: "2009159637-UYJ3xxUc" }); 
 
                 if (!liff.isLoggedIn()) {
                     liff.login();
                 } else {
-                    // 2. ใช้คำสั่งมาตรฐานของมือถือแทน liff.getLocation
+                    // 2. ดึงพิกัดจาก GPS มือถือ
                     navigator.geolocation.getCurrentPosition(async (position) => {
                         const lat = position.coords.latitude;
                         const lon = position.coords.longitude;
+                        
+                        document.getElementById('status').innerText = "กำลังแปลงพิกัดเป็นชื่อสถานที่...";
 
-                        // 3. ส่งข้อความพิกัดกลับเข้าแชท
+                        // 3. แปลง Lat/Lon เป็นชื่อที่อยู่ (Reverse Geocode)
+                        let address = "พิกัด: " + lat.toFixed(5) + ", " + lon.toFixed(5);
+                        try {
+                            const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&addressdetails=1`, {
+                                headers: { 'Accept-Language': 'th-TH' } // ขอเป็นภาษาไทย
+                            });
+                            const data = await res.json();
+                            if (data.display_name) {
+                                address = data.display_name; // ได้ชื่อที่อยู่จริง
+                            }
+                        } catch (err) {
+                            console.error("Geocoding error:", err);
+                        }
+
+                        // 4. ส่งข้อความ Location กลับเข้าแชท LINE
                         await liff.sendMessages([{
                             type: "location",
                             title: "📍 พบเหตุน้ำประปาแตก",
-                            address: "พิกัดจากเครื่องผู้แจ้ง",
+                            address: address, // แสดงที่อยู่จริงที่ดึงได้
                             latitude: lat,
                             longitude: lon
                         }]);
                         
-                        liff.closeWindow(); // ส่งเสร็จแล้วปิดหน้าต่างทันที
+                        document.getElementById('status').innerText = "ส่งข้อมูลเรียบร้อย!";
+                        setTimeout(() => liff.closeWindow(), 1000); 
+                        
                     }, (error) => {
-                        document.getElementById('status').innerText = "กรุณาอนุญาตสิทธิ์ตำแหน่งที่ตั้งในมือถือ";
-                        console.error(error);
-                    }, { enableHighAccuracy: true });
+                        document.getElementById('status').innerText = "กรุณาเปิด GPS และอนุญาตสิทธิ์ตำแหน่ง";
+                    }, { enableHighAccuracy: true, timeout: 10000 });
                 }
             } catch (error) {
                 document.getElementById('status').innerText = "เกิดข้อผิดพลาด: " + error.message;

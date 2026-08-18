@@ -7,259 +7,944 @@ ini_set('log_errors', '1');
 ini_set('error_log', __DIR__ . '/logs/php_error.log');
 date_default_timezone_set('Asia/Bangkok');
 
-if (!is_dir(__DIR__ . '/logs')) { @mkdir(__DIR__ . '/logs', 0777, true); }
-if (!is_dir(__DIR__ . '/uploads/tickets')) { @mkdir(__DIR__ . '/uploads/tickets', 0777, true); }
+if (!is_dir(__DIR__ . '/logs')) {
+    @mkdir(__DIR__ . '/logs', 0777, true);
+}
+
+if (!is_dir(__DIR__ . '/uploads/tickets')) {
+    @mkdir(__DIR__ . '/uploads/tickets', 0777, true);
+}
 
 $cfg = require __DIR__ . '/config.php';
+
 $body = file_get_contents('php://input');
-if (!$body) { echo "OK"; exit; }
+
+if (!$body) {
+    echo "OK";
+    exit;
+}
 
 try {
-    $pdo = new PDO($cfg['db']['dsn'], $cfg['db']['user'], $cfg['db']['pass'], [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-        PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES utf8mb4" 
-    ]);
+    $pdo = new PDO(
+        $cfg['db']['dsn'],
+        $cfg['db']['user'],
+        $cfg['db']['pass'],
+        [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES utf8mb4"
+        ]
+    );
 } catch (Exception $e) {
     error_log("DB Error: " . $e->getMessage());
+
+    // สำคัญ: Webhook ต้องตอบ 200
+    http_response_code(200);
+    echo "OK";
     exit;
 }
 
 $data = json_decode($body, true);
-if (!isset($data['events']) || !is_array($data['events'])) { echo "OK"; exit; }
 
-// --- ฟังก์ชันส่งข้อความตอบกลับ ---
-function reply($token, $msgs, $conf) {
+if (!isset($data['events']) || !is_array($data['events'])) {
+    echo "OK";
+    exit;
+}
+
+
+// ============================================================
+// ฟังก์ชันส่งข้อความตอบกลับ LINE
+// ============================================================
+function reply($token, $msgs, $conf)
+{
     $url = 'https://api.line.me/v2/bot/message/reply';
+
     $ch = curl_init($url);
+
     curl_setopt($ch, CURLOPT_POST, true);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode(['replyToken' => $token, 'messages' => $msgs], JSON_UNESCAPED_UNICODE));
-    curl_setopt($ch, CURLOPT_HTTPHEADER, [
-        'Content-Type: application/json',
-        'Authorization: Bearer ' . $conf['line']['channel_access_token']
-    ]);
+
+    curl_setopt(
+        $ch,
+        CURLOPT_POSTFIELDS,
+        json_encode(
+            [
+                'replyToken' => $token,
+                'messages' => $msgs
+            ],
+            JSON_UNESCAPED_UNICODE
+        )
+    );
+
+    curl_setopt(
+        $ch,
+        CURLOPT_HTTPHEADER,
+        [
+            'Content-Type: application/json',
+            'Authorization: Bearer ' . $conf['line']['channel_access_token']
+        ]
+    );
+
     curl_exec($ch);
     curl_close($ch);
 }
 
+
+// ============================================================
+// เริ่มประมวลผล Event
+// ============================================================
 foreach ($data['events'] as $ev) {
+
     $replyToken = $ev['replyToken'] ?? null;
     $userId     = $ev['source']['userId'] ?? null;
 
-    if (!$replyToken || !$userId || $replyToken === '00000000000000000000000000000000') continue;
+    if (
+        !$replyToken ||
+        !$userId ||
+        $replyToken === '00000000000000000000000000000000'
+    ) {
+        continue;
+    }
 
     $evType = $ev['type'] ?? '';
 
+
+    // ========================================================
+    // MESSAGE
+    // ========================================================
     if ($evType === 'message') {
+
         $msgType = $ev['message']['type'] ?? '';
 
+
+        // ====================================================
+        // TEXT MESSAGE
+        // ====================================================
         if ($msgType === 'text') {
+
             $text = trim((string)($ev['message']['text'] ?? ''));
 
-            // 🚀 [E] ส่วนบันทึกคะแนนประเมิน
+
+            // =================================================
+            // [E] บันทึกคะแนนประเมิน
+            // เก็บไว้รองรับข้อความเก่า แต่ระบบ DONE
+            // จะไม่ส่งปุ่มคะแนนให้อีกแล้ว
+            // =================================================
             if (strpos($text, 'RATING:') === 0) {
-                $parts = explode(':', $text); 
+
+                $parts = explode(':', $text);
+
                 if (count($parts) === 3) {
-                    $tNo = trim($parts[1]); $score = (int)$parts[2];
-                    $stmt = $pdo->prepare("UPDATE tickets SET rating = ? WHERE ticket_no = ?");
+
+                    $tNo   = trim($parts[1]);
+                    $score = (int)$parts[2];
+
+                    $stmt = $pdo->prepare(
+                        "UPDATE tickets
+                         SET rating = ?
+                         WHERE ticket_no = ?"
+                    );
+
                     $stmt->execute([$score, $tNo]);
-                    reply($replyToken, [['type' => 'text', 'text' => "ขอบพระคุณสำหรับคะแนนประเมิน $score ดาวครับ 🙏\nเราจะนำไปปรับปรุงการบริการให้ดียิ่งขึ้นครับ"]], $cfg);
+
+                    reply(
+                        $replyToken,
+                        [
+                            [
+                                'type' => 'text',
+                                'text' =>
+                                    "ขอบพระคุณสำหรับคะแนนประเมิน {$score} ดาวครับ 🙏\n" .
+                                    "เราจะนำไปปรับปรุงการบริการให้ดียิ่งขึ้นครับ"
+                            ]
+                        ],
+                        $cfg
+                    );
                 }
+
                 continue;
             }
 
-            // 🚀 [NEW] ส่วนบันทึกเบอร์โทรศัพท์ (ดักจับตัวเลข 9-10 หลัก)
+
+            // =================================================
+            // [NEW] บันทึกเบอร์โทรศัพท์
+            // =================================================
             if (preg_match('/^[0-9]{9,10}$/', $text)) {
-                $stmt = $pdo->prepare("SELECT id, ticket_no FROM tickets WHERE line_user_id = ? AND status != 'DONE' ORDER BY id DESC LIMIT 1");
+
+                $stmt = $pdo->prepare(
+                    "SELECT id, ticket_no
+                     FROM tickets
+                     WHERE line_user_id = ?
+                     AND status != 'DONE'
+                     ORDER BY id DESC
+                     LIMIT 1"
+                );
+
                 $stmt->execute([$userId]);
+
                 $lastTicket = $stmt->fetch();
 
                 if ($lastTicket) {
-                    $updatePhone = $pdo->prepare("UPDATE tickets SET contact_phone = ? WHERE id = ?");
-                    $updatePhone->execute([$text, $lastTicket['id']]);
-                    $confirmMsg = "✅ บันทึกเบอร์ติดต่อ: $text เรียบร้อยครับ (Ticket: {$lastTicket['ticket_no']})\nเจ้าหน้าที่จะรีบดำเนินการตรวจสอบให้ครับ 🙏";
-                    reply($replyToken, [['type' => 'text', 'text' => $confirmMsg]], $cfg);
+
+                    $updatePhone = $pdo->prepare(
+                        "UPDATE tickets
+                         SET contact_phone = ?
+                         WHERE id = ?"
+                    );
+
+                    $updatePhone->execute([
+                        $text,
+                        $lastTicket['id']
+                    ]);
+
+                    $confirmMsg =
+                        "✅ บันทึกเบอร์ติดต่อ: {$text} เรียบร้อยครับ\n" .
+                        "(Ticket: {$lastTicket['ticket_no']})\n" .
+                        "เจ้าหน้าที่จะรีบดำเนินการตรวจสอบให้ครับ 🙏";
+
+                    reply(
+                        $replyToken,
+                        [
+                            [
+                                'type' => 'text',
+                                'text' => $confirmMsg
+                            ]
+                        ],
+                        $cfg
+                    );
                 }
+
                 continue;
             }
 
-            // 🚀 [A] เมนูแจ้งปัญหา
+
+            // =================================================
+            // [A] เมนูแจ้งปัญหา
+            //
+            // เปลี่ยนตรงนี้เป็น "ข้อความธรรมดา"
+            // ไม่ใช้ Flex
+            // ไม่ใช้ Quick Reply
+            // =================================================
             if ($text === 'แจ้งปัญหา' || $text === 'แจ้งซ่อม') {
-                reply($replyToken, [[
-                    'type' => 'text',
-                    'text' => "📢 เลือกประเภทปัญหาที่พบครับ",
-                    'quickReply' => [
-                        'items' => [
-                            ['type' => 'action', 'action' => ['type' => 'message', 'label' => '🛠️ ท่อแตก/ท่อรั่ว', 'text' => 'เลือกแจ้ง:ท่อแตก/ท่อรั่ว']],
-                            ['type' => 'action', 'action' => ['type' => 'message', 'label' => '💧 น้ำไม่ไหล/ไหลอ่อน', 'text' => 'เลือกแจ้ง:น้ำไม่ไหล/ไหลอ่อน']],
-                            ['type' => 'action', 'action' => ['type' => 'message', 'label' => '💸 ค่าน้ำแพง', 'text' => 'เลือกแจ้ง:ค่าน้ำแพง']],
-                            ['type' => 'action', 'action' => ['type' => 'message', 'label' => '🔒 โดนตัดมาตร', 'text' => 'เลือกแจ้ง:โดนตัดมาตร']],
-                            ['type' => 'action', 'action' => ['type' => 'message', 'label' => '📝 อื่นๆ', 'text' => 'เลือกแจ้ง:อื่นๆ']]
+
+                $normalMsg =
+                    "📢 แจ้งปัญหาการใช้น้ำ\n\n" .
+                    "กรุณาพิมพ์หมายเลขประเภทปัญหาที่พบครับ\n\n" .
+                    "1. 🛠️ ท่อแตก/ท่อรั่ว\n" .
+                    "2. 💧 น้ำไม่ไหล/ไหลอ่อน\n" .
+                    "3. 💸 ค่าน้ำแพง\n" .
+                    "4. 🔒 โดนตัดมาตร\n" .
+                    "5. 📝 อื่นๆ\n\n" .
+                    "ตัวอย่าง: พิมพ์ 1";
+
+                reply(
+                    $replyToken,
+                    [
+                        [
+                            'type' => 'text',
+                            'text' => $normalMsg
                         ]
-                    ]
-                ]], $cfg);
+                    ],
+                    $cfg
+                );
+
                 continue;
             }
 
-            if (mb_strpos($text, 'เลือกแจ้ง:') === 0) {
-                $category = trim(str_replace('เลือกแจ้ง:', '', $text));
-                $repairGroups = ['ท่อแตก/ท่อรั่ว', 'น้ำไม่ไหล/ไหลอ่อน'];
 
-                if (in_array($category, $repairGroups)) {
-                    @file_put_contents(__DIR__ . "/logs/cat_{$userId}.txt", $category);
-                    reply($replyToken, [[
-                        'type' => 'text',
-                        'text' => "รับทราบครับ สำหรับปัญหา \"$category\"\n\n📍 รบกวนคุณลูกค้ากดปุ่ม 'ส่งพิกัด' ด้านล่าง และส่งรูปภาพจุดที่เกิดปัญหา เพื่อให้ทีมช่างเข้าตรวจสอบได้รวดเร็วครับ",
-                        'quickReply' => [
-                            'items' => [['type' => 'action', 'action' => ['type' => 'location', 'label' => '📍 กดส่งพิกัด']]]
-                        ]
-                    ]], $cfg);
+            // =================================================
+            // [A.1] ลูกค้าเลือกประเภทปัญหาแบบพิมพ์เลข
+            // =================================================
+
+            $category = '';
+
+            switch ($text) {
+
+                case '1':
+                    $category = 'ท่อแตก/ท่อรั่ว';
+                    break;
+
+                case '2':
+                    $category = 'น้ำไม่ไหล/ไหลอ่อน';
+                    break;
+
+                case '3':
+                    $category = 'ค่าน้ำแพง';
+                    break;
+
+                case '4':
+                    $category = 'โดนตัดมาตร';
+                    break;
+
+                case '5':
+                    $category = 'อื่นๆ';
+                    break;
+            }
+
+
+            // =================================================
+            // ถ้าเป็นประเภทปัญหาที่เลือก
+            // =================================================
+            if ($category !== '') {
+
+                $repairGroups = [
+                    'ท่อแตก/ท่อรั่ว',
+                    'น้ำไม่ไหล/ไหลอ่อน'
+                ];
+
+
+                // =============================================
+                // งานซ่อมที่ต้องใช้พิกัด
+                // =============================================
+                if (in_array($category, $repairGroups, true)) {
+
+                    @file_put_contents(
+                        __DIR__ . "/logs/cat_{$userId}.txt",
+                        $category
+                    );
+
+                    reply(
+                        $replyToken,
+                        [
+                            [
+                                'type' => 'text',
+                                'text' =>
+                                    "รับทราบครับ สำหรับปัญหา \"{$category}\"\n\n" .
+                                    "📍 รบกวนคุณลูกค้าส่งพิกัดสถานที่เกิดปัญหา " .
+                                    "เพื่อให้ทีมช่างเข้าตรวจสอบได้รวดเร็วครับ"
+                            ]
+                        ],
+                        $cfg
+                    );
+
                 } else {
-                    $docMsg = "📝 สำหรับเรื่อง \"$category\"\nกรุณาเตรียมเอกสารและติดต่อ กปภ.สาขายโสธร ดังนี้ครับ:\n\n1. สำเนาบัตรประชาชนผู้ใช้น้ำ (เซ็นรับรอง)\n2. ใบเสร็จค่าน้ำล่าสุด (ถ้ามี)\n3. หนังสือมอบอำนาจ (กรณีดำเนินการแทน)";
-                    reply($replyToken, [['type' => 'text', 'text' => $docMsg]], $cfg);
-                    if (is_file(__DIR__ . "/logs/cat_{$userId}.txt")) { @unlink(__DIR__ . "/logs/cat_{$userId}.txt"); }
+
+                    // =========================================
+                    // เรื่องทั่วไป
+                    // =========================================
+
+                    $docMsg =
+                        "📝 สำหรับเรื่อง \"{$category}\"\n\n" .
+                        "กรุณาเตรียมเอกสารและติดต่อ กปภ.สาขายโสธร ดังนี้ครับ:\n\n" .
+                        "1. สำเนาบัตรประชาชนผู้ใช้น้ำ (เซ็นรับรอง)\n" .
+                        "2. ใบเสร็จค่าน้ำล่าสุด (ถ้ามี)\n" .
+                        "3. หนังสือมอบอำนาจ (กรณีดำเนินการแทน)";
+
+                    reply(
+                        $replyToken,
+                        [
+                            [
+                                'type' => 'text',
+                                'text' => $docMsg
+                            ]
+                        ],
+                        $cfg
+                    );
+
+                    if (
+                        is_file(
+                            __DIR__ . "/logs/cat_{$userId}.txt"
+                        )
+                    ) {
+                        @unlink(
+                            __DIR__ . "/logs/cat_{$userId}.txt"
+                        );
+                    }
                 }
+
                 continue;
             }
 
-            // 🚀 [C] เมนูเช็คพื้นที่หยุดจ่าย (ส่งรูปที่แอดมิน Crop เอง)
-            if (mb_strpos($text, 'พื้นที่หยุดจ่ายน้ำ') !== false || mb_strpos($text, 'เช็คพื้นที่') !== false) {
-                // ดึงข้อมูลพื้นที่ที่หยุดจ่ายอยู่ (status = 1)
-                $stmt = $pdo->prepare("SELECT * FROM water_status WHERE status = 1 ORDER BY updated_at DESC LIMIT 3");
+
+            // =================================================
+            // [C] เมนูเช็คพื้นที่หยุดจ่าย
+            // ส่วนนี้ไม่แตะ
+            // =================================================
+            if (
+                mb_strpos($text, 'พื้นที่หยุดจ่ายน้ำ') !== false ||
+                mb_strpos($text, 'เช็คพื้นที่') !== false
+            ) {
+
+                $stmt = $pdo->prepare(
+                    "SELECT *
+                     FROM water_status
+                     WHERE status = 1
+                     ORDER BY updated_at DESC
+                     LIMIT 3"
+                );
+
                 $stmt->execute();
+
                 $areas = $stmt->fetchAll();
 
                 if ($areas) {
+
                     $msgs = [];
+
                     foreach ($areas as $a) {
-                        // 🚩 ดึงรูปที่แอดมิน Crop ไว้จากโฟลเดอร์ uploads/maps/
-                        // ถ้าไม่มีรูป Crop ให้ใช้แผนที่ Static เป็นแผนสำรอง
+
                         if (!empty($a['polygon_image'])) {
-                            $imgUrl = "https://nitrous-corie-unadeptly.ngrok-free.dev/smartwater/uploads/maps/" . $a['polygon_image'];
+
+                            $imgUrl =
+                                "https://nitrous-corie-unadeptly.ngrok-free.dev/" .
+                                "smartwater/uploads/maps/" .
+                                $a['polygon_image'];
+
                         } else {
-                            $imgUrl = "https://static-maps.yandex.ru/1.x/?l=map,skl&z=11&size=600,450&spn=0.1,0.1&pl=c:ff0000ff,f:ff000066,w:5," . $a['polygon_coords'];
+
+                            $imgUrl =
+                                "https://static-maps.yandex.ru/1.x/" .
+                                "?l=map,skl" .
+                                "&z=11" .
+                                "&size=600,450" .
+                                "&spn=0.1,0.1" .
+                                "&pl=c:ff0000ff,f:ff000066,w:5," .
+                                $a['polygon_coords'];
                         }
 
-                        // 1. ส่งรูปภาพที่สวยงาม
+
+                        // รูปภาพ
                         $msgs[] = [
-                            'type' => 'image', 
-                            'originalContentUrl' => $imgUrl, 
+                            'type' => 'image',
+                            'originalContentUrl' => $imgUrl,
                             'previewImageUrl' => $imgUrl
                         ];
-                        
-                        // 2. ส่งข้อความรายละเอียด
-                        $affected = !empty($a['affected_areas']) ? $a['affected_areas'] : 'ทุกพื้นที่ในเขตบริการ';
+
+
+                        // รายละเอียด
+                        $affected =
+                            !empty($a['affected_areas'])
+                            ? $a['affected_areas']
+                            : 'ทุกพื้นที่ในเขตบริการ';
+
                         $msgs[] = [
-                            'type' => 'text', 
-                            'text' => "⚠️ รายงานหยุดจ่ายน้ำ\n" .
-                                      "📍 จุดแจ้ง: {$a['logger_name']}\n" .
-                                      "🏘️ พื้นที่กระทบ: {$affected}\n" .
-                                      "❌ สาเหตุ: " . ($a['remark'] ?: 'ซ่อมบำรุง') . "\n" .
-                                      "⌛ คาดว่าเสร็จ: " . ($a['duration'] ?: 'จนกว่าจะแล้วเสร็จ')
+                            'type' => 'text',
+                            'text' =>
+                                "⚠️ รายงานหยุดจ่ายน้ำ\n" .
+                                "📍 จุดแจ้ง: {$a['logger_name']}\n" .
+                                "🏘️ พื้นที่กระทบ: {$affected}\n" .
+                                "❌ สาเหตุ: " .
+                                ($a['remark'] ?: 'ซ่อมบำรุง') .
+                                "\n" .
+                                "⌛ คาดว่าเสร็จ: " .
+                                ($a['duration'] ?: 'จนกว่าจะแล้วเสร็จ')
                         ];
                     }
-                    reply($replyToken, $msgs, $cfg);
+
+                    reply(
+                        $replyToken,
+                        $msgs,
+                        $cfg
+                    );
+
                 } else {
-                    reply($replyToken, [['type' => 'text', 'text' => "✅ ขณะนี้ทุกพื้นที่จ่ายน้ำปกติครับ"]], $cfg);
+
+                    reply(
+                        $replyToken,
+                        [
+                            [
+                                'type' => 'text',
+                                'text' =>
+                                    "✅ ขณะนี้ทุกพื้นที่จ่ายน้ำปกติครับ"
+                            ]
+                        ],
+                        $cfg
+                    );
                 }
+
                 continue;
             }
 
+
+            // =================================================
+            // [D] ติดตามสถานะ
+            //
+            // FLEX เดิม ไม่แตะ
+            // =================================================
             if ($text === 'ติดตามสถานะ') {
-                $stmt = $pdo->prepare("SELECT ticket_no, status, latitude, longitude, address_text FROM tickets WHERE line_user_id = ? ORDER BY id DESC LIMIT 1");
+
+                $stmt = $pdo->prepare(
+                    "SELECT
+                        ticket_no,
+                        status,
+                        latitude,
+                        longitude,
+                        address_text
+                     FROM tickets
+                     WHERE line_user_id = ?
+                     ORDER BY id DESC
+                     LIMIT 1"
+                );
+
                 $stmt->execute([$userId]);
+
                 $t = $stmt->fetch();
 
+
                 if ($t) {
-                    $statusMap = ['NEW' => '⏳ รับเรื่องแล้ว', 'ASSIGNED' => '👷 มอบหมายงาน', 'IN_PROGRESS' => '🔧 กำลังดำเนินการ', 'ON_SITE' => '📍 ถึงหน้างาน', 'DONE' => '✅ เสร็จสิ้น', 'CANCEL' => '❌ ยกเลิก'];
-                    $statusLabel = $statusMap[$t['status']] ?? $t['status'];
-                    $map = "https://static-maps.yandex.ru/1.x/?lang=th_TH&ll={$t['longitude']},{$t['latitude']}&z=16&l=map&size=600,300&pt={$t['longitude']},{$t['latitude']},pm2rdm";
-                    $flex = ["type"=>"bubble","hero"=>["type"=>"image","url"=>$map,"size"=>"full","aspectRatio"=>"20:13","aspectMode"=>"cover"],"body"=>["type"=>"box","layout"=>"vertical","contents"=>[["type"=>"text","text"=>"สถานะ: $statusLabel","weight"=>"bold","size"=>"xl","color"=>"#1a73e8"],["type"=>"text","text"=>"📍 ".($t['address_text'] ?? 'ไม่ระบุที่อยู่'),"size"=>"sm","wrap"=>true,"margin"=>"md"]]]];
-                    $messages = [['type' => 'flex', 'altText' => 'ติดตามสถานะ', 'contents' => $flex]];
 
-                    if ($t['status'] === 'DONE') {
-                        $messages[] = [
-                            "type" => "text",
-                            "text" => "🔧 งานซ่อมเสร็จเรียบร้อยแล้วครับ\nรบกวนประเมินความพึงพอใจให้เราด้วยครับ ⭐",
-                            "quickReply" => [
-                                "items" => [
-                                    ["type" => "action", "action" => ["type" => "message", "label" => "1 ⭐", "text" => "RATING:".$t['ticket_no'].":1"]],
-                                    ["type" => "action", "action" => ["type" => "message", "label" => "2 ⭐", "text" => "RATING:".$t['ticket_no'].":2"]],
-                                    ["type" => "action", "action" => ["type" => "message", "label" => "3 ⭐", "text" => "RATING:".$t['ticket_no'].":3"]],
-                                    ["type" => "action", "action" => ["type" => "message", "label" => "4 ⭐", "text" => "RATING:".$t['ticket_no'].":4"]],
-                                    ["type" => "action", "action" => ["type" => "message", "label" => "5 ⭐", "text" => "RATING:".$t['ticket_no'].":5"]]
+                    $statusMap = [
+                        'NEW' =>
+                            '⏳ รับเรื่องแล้ว',
 
+                        'ASSIGNED' =>
+                            '👷 มอบหมายงาน',
+
+                        'IN_PROGRESS' =>
+                            '🔧 กำลังดำเนินการ',
+
+                        'ON_SITE' =>
+                            '📍 ถึงหน้างาน',
+
+                        'DONE' =>
+                            '✅ เสร็จสิ้น',
+
+                        'CANCEL' =>
+                            '❌ ยกเลิก'
+                    ];
+
+                    $statusLabel =
+                        $statusMap[$t['status']]
+                        ?? $t['status'];
+
+
+                    $map =
+                        "https://static-maps.yandex.ru/1.x/" .
+                        "?lang=th_TH" .
+                        "&ll={$t['longitude']},{$t['latitude']}" .
+                        "&z=16" .
+                        "&l=map" .
+                        "&size=600,300" .
+                        "&pt={$t['longitude']},{$t['latitude']},pm2rdm";
+
+
+                    // FLEX เดิม
+                    $flex = [
+                        "type" => "bubble",
+
+                        "hero" => [
+                            "type" => "image",
+                            "url" => $map,
+                            "size" => "full",
+                            "aspectRatio" => "20:13",
+                            "aspectMode" => "cover"
+                        ],
+
+                        "body" => [
+                            "type" => "box",
+                            "layout" => "vertical",
+
+                            "contents" => [
+
+                                [
+                                    "type" => "text",
+                                    "text" => "สถานะ: $statusLabel",
+                                    "weight" => "bold",
+                                    "size" => "xl",
+                                    "color" => "#1a73e8"
+                                ],
+
+                                [
+                                    "type" => "text",
+                                    "text" =>
+                                        "📍 " .
+                                        ($t['address_text'] ?? 'ไม่ระบุที่อยู่'),
+                                    "size" => "sm",
+                                    "wrap" => true,
+                                    "margin" => "md"
                                 ]
                             ]
-                        ];
-                    }
-                    reply($replyToken, $messages, $cfg);
+                        ]
+                    ];
+
+
+                    // =================================================
+                    // สำคัญ:
+                    // DONE ไม่มี Quick Reply ดาวแล้ว
+                    // =================================================
+
+                    $messages = [
+                        [
+                            'type' => 'flex',
+                            'altText' => 'ติดตามสถานะ',
+                            'contents' => $flex
+                        ]
+                    ];
+
+
+                    reply(
+                        $replyToken,
+                        $messages,
+                        $cfg
+                    );
+
                 } else {
-                    reply($replyToken, [['type' => 'text', 'text' => "ยังไม่พบรายการแจ้งปัญหาของคุณครับ"]], $cfg);
+
+                    reply(
+                        $replyToken,
+                        [
+                            [
+                                'type' => 'text',
+                                'text' =>
+                                    "ยังไม่พบรายการแจ้งปัญหาของคุณครับ"
+                            ]
+                        ],
+                        $cfg
+                    );
                 }
+
                 continue;
             }
         }
 
+
+        // ====================================================
+        // LOCATION MESSAGE
+        // ====================================================
         elseif ($msgType === 'location') {
-            $accuracy = $ev['message']['accuracy'] ?? 0;
+
+            $accuracy =
+                $ev['message']['accuracy'] ?? 0;
+
+
             if ($accuracy > 100) {
-                reply($replyToken, [['type' => 'text', 'text' => "⚠️ พิกัดของคุณไม่ชัดเจน (คลาดเคลื่อน $accuracy เมตร)\nรบกวนช่วยส่งพิกัดใหม่อีกครั้งในที่โล่งครับ"]], $cfg);
+
+                reply(
+                    $replyToken,
+                    [
+                        [
+                            'type' => 'text',
+                            'text' =>
+                                "⚠️ พิกัดของคุณไม่ชัดเจน " .
+                                "(คลาดเคลื่อน {$accuracy} เมตร)\n" .
+                                "รบกวนช่วยส่งพิกัดใหม่อีกครั้งในที่โล่งครับ"
+                        ]
+                    ],
+                    $cfg
+                );
+
                 continue;
             }
 
-            $lat = $ev['message']['latitude']; $lng = $ev['message']['longitude'];
-            $addr = $ev['message']['address'] ?? 'ไม่ระบุที่อยู่';
-            $tNo = "SW-" . date('Ymd-His');
-            $stmtNear = $pdo->prepare("SELECT ticket_no, category, (6371 * acos(cos(radians(?)) * cos(radians(latitude)) * cos(radians(longitude) - radians(?)) + sin(radians(?)) * sin(radians(latitude)))) AS distance FROM tickets WHERE status != 'DONE' HAVING distance <= 0.1 LIMIT 1");
-            $stmtNear->execute([$lat, $lng, $lat]);
-            $near = $stmtNear->fetch();
+
+            $lat =
+                $ev['message']['latitude'];
+
+            $lng =
+                $ev['message']['longitude'];
+
+            $addr =
+                $ev['message']['address']
+                ?? 'ไม่ระบุที่อยู่';
+
+            $tNo =
+                "SW-" . date('Ymd-His');
+
+
+            // ตรวจสอบแจ้งซ้ำ 100 เมตร
+            $stmtNear = $pdo->prepare(
+                "SELECT
+                    ticket_no,
+                    category,
+                    (
+                        6371 *
+                        acos(
+                            cos(radians(?)) *
+                            cos(radians(latitude)) *
+                            cos(
+                                radians(longitude) -
+                                radians(?)
+                            ) +
+                            sin(radians(?)) *
+                            sin(radians(latitude))
+                        )
+                    ) AS distance
+                 FROM tickets
+                 WHERE status != 'DONE'
+                 HAVING distance <= 0.1
+                 LIMIT 1"
+            );
+
+            $stmtNear->execute([
+                $lat,
+                $lng,
+                $lat
+            ]);
+
+            $near =
+                $stmtNear->fetch();
+
+
             if ($near) {
-                reply($replyToken, [['type' => 'text', 'text' => "📢 บริเวณนี้มีการแจ้งปัญหา \"{$near['category']}\" ไว้แล้ว (เลขที่: {$near['ticket_no']})\nเจ้าหน้าที่จะรี่งดำเนินการครับ"]], $cfg);
+
+                reply(
+                    $replyToken,
+                    [
+                        [
+                            'type' => 'text',
+                            'text' =>
+                                "📢 บริเวณนี้มีการแจ้งปัญหา " .
+                                "\"{$near['category']}\" ไว้แล้ว\n" .
+                                "(เลขที่: {$near['ticket_no']})\n" .
+                                "เจ้าหน้าที่จะรี่งดำเนินการครับ"
+                        ]
+                    ],
+                    $cfg
+                );
+
                 continue;
             }
-            $catFile = __DIR__ . "/logs/cat_{$userId}.txt";
+
+
+            // อ่านประเภทปัญหา
+            $catFile =
+                __DIR__ . "/logs/cat_{$userId}.txt";
+
+
             if (is_file($catFile)) {
-                $cat = trim((string)file_get_contents($catFile));
+
+                $cat =
+                    trim(
+                        (string)file_get_contents($catFile)
+                    );
+
                 @unlink($catFile);
-                $sql = "INSERT INTO tickets (ticket_no, category, line_user_id, issue_type, latitude, longitude, address_text, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'NEW', NOW())";
-                $pdo->prepare($sql)->execute([$tNo, $cat, $userId, 'LINE', $lat, $lng, $addr]);
-                reply($replyToken, [['type' => 'text', 'text' => "📍 บันทึกพิกัดสำเร็จ (เลขที่ $tNo)!\n📸 สุดท้ายรบกวนส่งรูปภาพหน้างานเพื่อยืนยันด้วยครับ", 'quickReply' => ['items' => [['type' => 'action', 'action' => ['type' => 'camera', 'label' => '📸 ถ่ายรูป']]]]]], $cfg);
+
+
+                // บันทึก Ticket
+                $sql =
+                    "INSERT INTO tickets
+                    (
+                        ticket_no,
+                        category,
+                        line_user_id,
+                        issue_type,
+                        latitude,
+                        longitude,
+                        address_text,
+                        status,
+                        created_at
+                    )
+                    VALUES
+                    (
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        'NEW',
+                        NOW()
+                    )";
+
+
+                $pdo
+                    ->prepare($sql)
+                    ->execute([
+                        $tNo,
+                        $cat,
+                        $userId,
+                        'LINE',
+                        $lat,
+                        $lng,
+                        $addr
+                    ]);
+
+
+                reply(
+                    $replyToken,
+                    [
+                        [
+                            'type' => 'text',
+                            'text' =>
+                                "📍 บันทึกพิกัดสำเร็จ " .
+                                "(เลขที่ $tNo)!\n" .
+                                "📸 สุดท้ายรบกวนส่งรูปภาพหน้างาน " .
+                                "เพื่อยืนยันด้วยครับ",
+                            'quickReply' => [
+                                'items' => [
+                                    [
+                                        'type' => 'action',
+                                        'action' => [
+                                            'type' => 'camera',
+                                            'label' => '📸 ถ่ายรูป'
+                                        ]
+                                    ]
+                                ]
+                            ]
+                        ]
+                    ],
+                    $cfg
+                );
+
             } else {
-                reply($replyToken, [['type' => 'text', 'text' => "กรุณาเลือกเมนู 'แจ้งปัญหา' ก่อนส่งพิกัดครับ"]], $cfg);
+
+                reply(
+                    $replyToken,
+                    [
+                        [
+                            'type' => 'text',
+                            'text' =>
+                                "กรุณาเลือกเมนู 'แจ้งปัญหา' " .
+                                "ก่อนส่งพิกัดครับ"
+                        ]
+                    ],
+                    $cfg
+                );
             }
         }
 
+
+        // ====================================================
+        // IMAGE MESSAGE
+        // ====================================================
         elseif ($msgType === 'image') {
-            $stmt = $pdo->prepare("SELECT id, ticket_no FROM tickets WHERE line_user_id = ? AND status != 'DONE' ORDER BY id DESC LIMIT 1");
+
+            $stmt = $pdo->prepare(
+                "SELECT id, ticket_no
+                 FROM tickets
+                 WHERE line_user_id = ?
+                 AND status != 'DONE'
+                 ORDER BY id DESC
+                 LIMIT 1"
+            );
+
             $stmt->execute([$userId]);
-            $lastTicket = $stmt->fetch();
+
+            $lastTicket =
+                $stmt->fetch();
+
 
             if ($lastTicket) {
-                $tId = $lastTicket['id']; $tNo = $lastTicket['ticket_no'];
-                $messageId = $ev['message']['id'];
-                $url = "https://api-data.line.me/v2/bot/message/" . $messageId . "/content";
-                $ch = curl_init($url);
-                curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-                curl_setopt($ch, CURLOPT_HTTPHEADER, ['Authorization: Bearer ' . $cfg['line']['channel_access_token']]);
-                $dataImg = curl_exec($ch);
+
+                $tId =
+                    $lastTicket['id'];
+
+                $tNo =
+                    $lastTicket['ticket_no'];
+
+                $messageId =
+                    $ev['message']['id'];
+
+
+                // ดึงรูปจาก LINE
+                $url =
+                    "https://api-data.line.me/v2/bot/message/" .
+                    $messageId .
+                    "/content";
+
+
+                $ch =
+                    curl_init($url);
+
+
+                curl_setopt(
+                    $ch,
+                    CURLOPT_RETURNTRANSFER,
+                    true
+                );
+
+                curl_setopt(
+                    $ch,
+                    CURLOPT_HTTPHEADER,
+                    [
+                        'Authorization: Bearer ' .
+                        $cfg['line']['channel_access_token']
+                    ]
+                );
+
+
+                $dataImg =
+                    curl_exec($ch);
+
                 curl_close($ch);
 
+
                 if ($dataImg) {
-                    $fileName = "SW-" . date('Ymd-His') . "_" . uniqid() . ".jpg";
-                    $savePath = __DIR__ . "/uploads/tickets/" . $fileName;
-                    file_put_contents($savePath, $dataImg);
-                    $sqlInsertPhoto = "INSERT INTO ticket_photos (ticket_id, file_name, created_at) VALUES (?, ?, NOW())";
-                    $pdo->prepare($sqlInsertPhoto)->execute([$tId, $fileName]);
-                    
-                    // 🚀 ขอเบอร์โทรต่อทันทีหลังจากรับรูปเสร็จ
-                    reply($replyToken, [['type' => 'text', 'text' => "📸 บันทึกรูปภาพเรียบร้อยครับ\n\n📞 สุดท้ายรบกวนพิมพ์ 'เบอร์โทรศัพท์' 10 หลัก เพื่อให้เจ้าหน้าที่ติดต่อกลับได้รวดเร็วครับ"]], $cfg);
+
+                    $fileName =
+                        "SW-" .
+                        date('Ymd-His') .
+                        "_" .
+                        uniqid() .
+                        ".jpg";
+
+
+                    $savePath =
+                        __DIR__ .
+                        "/uploads/tickets/" .
+                        $fileName;
+
+
+                    file_put_contents(
+                        $savePath,
+                        $dataImg
+                    );
+
+
+                    $sqlInsertPhoto =
+                        "INSERT INTO ticket_photos
+                        (
+                            ticket_id,
+                            file_name,
+                            created_at
+                        )
+                        VALUES
+                        (
+                            ?,
+                            ?,
+                            NOW()
+                        )";
+
+
+                    $pdo
+                        ->prepare($sqlInsertPhoto)
+                        ->execute([
+                            $tId,
+                            $fileName
+                        ]);
+
+
+                    // ขอเบอร์โทรต่อ
+                    reply(
+                        $replyToken,
+                        [
+                            [
+                                'type' => 'text',
+                                'text' =>
+                                    "📸 บันทึกรูปภาพเรียบร้อยครับ\n\n" .
+                                    "📞 สุดท้ายรบกวนพิมพ์ " .
+                                    "'เบอร์โทรศัพท์' 10 หลัก " .
+                                    "เพื่อให้เจ้าหน้าที่ติดต่อกลับได้รวดเร็วครับ"
+                            ]
+                        ],
+                        $cfg
+                    );
                 }
+
             } else {
-                reply($replyToken, [['type' => 'text', 'text' => "กรุณาแจ้งปัญหาและส่งพิกัดก่อนส่งรูปภาพครับ"]], $cfg);
+
+                reply(
+                    $replyToken,
+                    [
+                        [
+                            'type' => 'text',
+                            'text' =>
+                                "กรุณาแจ้งปัญหาและส่งพิกัด " .
+                                "ก่อนส่งรูปภาพครับ"
+                        ]
+                    ],
+                    $cfg
+                );
             }
         }
     }
 }
+
+
+// ============================================================
+// สำคัญมากสำหรับ LINE Webhook
+// ต้องตอบ HTTP 200
+// ============================================================
+http_response_code(200);
 echo "OK";
